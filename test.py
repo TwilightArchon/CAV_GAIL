@@ -61,7 +61,7 @@ def main():
 
     # Evaluate best model on all test trajectories
     print("\nEvaluating best model on all test trajectories...")
-    mean_mse, individual_mses = evaluate_model(
+    mean_mse, individual_mses, trajectory_metrics = evaluate_model(
         ppo_agent=ppo_agent,
         model_path=best_model_path,
         testing_traj=trajectories['raw_testing'],
@@ -71,6 +71,27 @@ def main():
     )
     print(f"Mean MSE across all trajectories: {mean_mse}")
     print("Individual trajectory MSEs:", individual_mses)
+    
+    # Calculate and print average safety metrics across all trajectories
+    avg_metrics = {
+        'min_ttc': np.mean([m['min_ttc'] for m in trajectory_metrics]),
+        'mean_ttc': np.mean([m['mean_ttc'] for m in trajectory_metrics]),
+        'min_distance': np.mean([m['min_distance'] for m in trajectory_metrics]),
+        'mean_distance': np.mean([m['mean_distance'] for m in trajectory_metrics]),
+        'std_ego_speed': np.mean([m['std_ego_speed'] for m in trajectory_metrics]),
+        'std_back_speed': np.mean([m['std_back_speed'] for m in trajectory_metrics]),
+        'std_relative_speed': np.mean([m['std_relative_speed'] for m in trajectory_metrics])
+    }
+    
+    print("\nAverage Safety Metrics Across All Trajectories:")
+    print(f"Average Minimum Time-to-Collision (TTC): {avg_metrics['min_ttc']:.2f} seconds")
+    print(f"Average Mean Time-to-Collision (TTC): {avg_metrics['mean_ttc']:.2f} seconds")
+    print(f"Average Minimum Distance to Front Vehicle: {avg_metrics['min_distance']:.2f} meters")
+    print(f"Average Mean Distance to Front Vehicle: {avg_metrics['mean_distance']:.2f} meters")
+    print("\nAverage Speed Statistics:")
+    print(f"Average Standard Deviation of Ego Vehicle Speed: {avg_metrics['std_ego_speed']:.2f} m/s")
+    print(f"Average Standard Deviation of Back Vehicle Speed: {avg_metrics['std_back_speed']:.2f} m/s")
+    print(f"Average Standard Deviation of Relative Speed: {avg_metrics['std_relative_speed']:.2f} m/s")
 
     # Load the best model for detailed analysis
     ppo_agent.load(best_model_path)
@@ -83,11 +104,20 @@ def main():
     predicted_actions, _, _ = ppo_agent.policy_old.act(test_states)
 
     # Calculate detailed metrics
-    metrics = calculate_metrics(predicted_actions, test_actions)
+    metrics = calculate_metrics(predicted_actions, test_actions, test_states)
     print("\nDetailed Metrics:")
     print(f"MSE: {metrics['mse']:.6f}")
     print(f"MAE: {metrics['mae']:.6f}")
     print(f"R² Score: {metrics['r2']:.6f}")
+    print("\nSafety Metrics:")
+    print(f"Minimum Time-to-Collision (TTC): {metrics['min_ttc']:.2f} seconds")
+    print(f"Mean Time-to-Collision (TTC): {metrics['mean_ttc']:.2f} seconds")
+    print(f"Minimum Distance to Front Vehicle: {metrics['min_distance']:.2f} meters")
+    print(f"Mean Distance to Front Vehicle: {metrics['mean_distance']:.2f} meters")
+    print("\nSpeed Statistics:")
+    print(f"Standard Deviation of Ego Vehicle Speed: {metrics['std_ego_speed']:.2f} m/s")
+    print(f"Standard Deviation of Back Vehicle Speed: {metrics['std_back_speed']:.2f} m/s")
+    print(f"Standard Deviation of Relative Speed: {metrics['std_relative_speed']:.2f} m/s")
 
     # Create plots directory
     plots_dir = "trajectory_plots"
