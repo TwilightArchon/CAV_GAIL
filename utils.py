@@ -69,7 +69,7 @@ def find_best_model(ppo_agent, model_dir, testing_states, testing_actions, start
     best_idx = np.argmin(MSE_test)
     return f"{model_dir}/GAIL_{idx[best_idx]}.pth", MSE_test[best_idx]
 
-def calculate_metrics(predicted, actual):
+def calculate_metrics(predicted, actual, states=None):
     """Calculate various metrics between predicted and actual actions."""
     mse = nn.MSELoss()(predicted, actual).item()
     mae = torch.mean(torch.abs(predicted - actual)).item()
@@ -115,13 +115,48 @@ def calculate_metrics(predicted, actual):
     kld_acc = calculate_kld(actual[:, 0], predicted[:, 0])
     kld_yaw = calculate_kld(actual[:, 1], predicted[:, 1])
 
-    return {
+    # Calculate safety metrics if states are provided
+    safety_metrics = {}
+    if states is not None:
+        # Extract relevant state information
+        # states[:, 0] = E position - B position (longitudinal)
+        # states[:, 3] = E speed (longitudinal) - This is ego vehicle speed
+        # states[:, 6] = B acc
+        # states[:, 8] = B speed - This is back vehicle speed
+        
+        # Calculate time-to-collision (TTC) for front vehicle
+        front_distance = states[:, 0].cpu().numpy()  # Distance to front vehicle
+        ego_speed = states[:, 3].cpu().numpy()  # Ego vehicle speed (E speed)
+        back_speed = states[:, 8].cpu().numpy()  # Back vehicle speed (B speed)
+        
+        # Calculate relative speed (ego speed relative to front vehicle)
+        relative_speed = ego_speed  # Since front_distance is E position - B position, we only need ego speed
+        
+        # Calculate TTC (avoid division by zero)
+        ttc = np.where(relative_speed > 0, front_distance / relative_speed, float('inf'))
+        
+        # Calculate safety metrics
+        safety_metrics['min_ttc'] = np.min(ttc[ttc != float('inf')])  # Minimum TTC
+        safety_metrics['mean_ttc'] = np.mean(ttc[ttc != float('inf')])  # Mean TTC
+        safety_metrics['min_distance'] = np.min(front_distance)  # Minimum distance to front vehicle
+        safety_metrics['mean_distance'] = np.mean(front_distance)  # Mean distance to front vehicle
+        safety_metrics['std_ego_speed'] = np.std(ego_speed)  # Standard deviation of ego vehicle speed
+        safety_metrics['std_back_speed'] = np.std(back_speed)  # Standard deviation of back vehicle speed
+        safety_metrics['std_relative_speed'] = np.std(relative_speed)  # Standard deviation of relative speed
+
+    metrics = {
         'mse': mse,
         'mae': mae,
         'r2': r2,
         'kld_acc': kld_acc,
         'kld_yaw': kld_yaw
     }
+    
+    # Add safety metrics if they were calculated
+    if safety_metrics:
+        metrics.update(safety_metrics)
+    
+    return metrics
 
 def plot_trajectory_comparison(actions, testing_actions, title="Trajectory Comparison", save_dir="trajectory_plots"):
     """Plot comparison between predicted and actual trajectories."""
@@ -153,6 +188,46 @@ def plot_trajectory_comparison(actions, testing_actions, title="Trajectory Compa
     plt.savefig(os.path.join(traj_dir, "trajectory_comparison.png"))
     plt.close()
 
+def plot_safety_metrics(states, title="Safety Metrics", save_dir="trajectory_plots"):
+    """Plot safety metrics (TTC and speed std) for a trajectory."""
+    traj_dir = os.path.join(save_dir, title.replace(" ", "_"))
+    os.makedirs(traj_dir, exist_ok=True)
+    
+    # Extract relevant state information
+    front_distance = states[:, 0].cpu().numpy()  # Distance to front vehicle
+    ego_speed = states[:, 3].cpu().numpy()  # Ego vehicle speed (E speed)
+    back_speed = states[:, 8].cpu().numpy()  # Back vehicle speed (B speed)
+    
+    # Calculate relative speed and TTC
+    relative_speed = ego_speed  # Since front_distance is E position - B position
+    ttc = np.where(relative_speed > 0, front_distance / relative_speed, float('inf'))
+    
+    # Calculate rolling window statistics
+    window_size = 50  # 5 seconds with 0.1s timestep
+    ego_speed_std = np.array([np.std(ego_speed[max(0, i-window_size):i+1]) for i in range(len(ego_speed))])
+    
+    plt.figure(dpi=60, figsize=[36, 4])
+
+    # Plot TTC
+    plt.subplot(1, 2, 1)
+    plt.plot(ttc, c='b', linewidth=1, label='TTC')
+    plt.gca().set_title('Time to Collision')
+    plt.xlabel('Time (0.1s)')
+    plt.ylabel('TTC (s)')
+    plt.legend()
+    
+    # Plot speed standard deviation
+    plt.subplot(1, 2, 2)
+    plt.plot(ego_speed_std, c='b', linewidth=1, label='Speed Std')
+    plt.gca().set_title('Ego Vehicle Speed Standard Deviation')
+    plt.xlabel('Time (0.1s)')
+    plt.ylabel('Standard Deviation (m/s)')
+    plt.legend()
+
+    plt.suptitle(f"{title} - Safety Metrics")
+    plt.savefig(os.path.join(traj_dir, "safety_metrics.png"))
+    plt.close()
+
 def evaluate_model(ppo_agent, model_path, testing_traj, state_dim, action_dim, device):
     """Evaluate a specific model on all testing trajectories."""
     ppo_agent.load(model_path)
@@ -161,6 +236,7 @@ def evaluate_model(ppo_agent, model_path, testing_traj, state_dim, action_dim, d
     loss = nn.MSELoss()
 
     MSE_PATH = []
+    metrics_list = []
     save_dir = "trajectory_plots"
     os.makedirs(save_dir, exist_ok=True)
     
@@ -175,15 +251,26 @@ def evaluate_model(ppo_agent, model_path, testing_traj, state_dim, action_dim, d
         mse = loss(actions, testing_actions).item()
         MSE_PATH.append(mse)
         
-        # Plot and save each trajectory separately
+        # Calculate metrics for this trajectory
+        trajectory_metrics = calculate_metrics(actions, testing_actions, testing_states)
+        metrics_list.append(trajectory_metrics)
+        
+        # Plot trajectory comparisons
         plot_trajectory_comparison(
             actions.cpu().numpy(),
             testing_actions.cpu().numpy(),
             title=f"Trajectory_{i+1}",
             save_dir=save_dir
         )
+        
+        # Plot safety metrics
+        plot_safety_metrics(
+            testing_states,
+            title=f"Trajectory_{i+1}",
+            save_dir=save_dir
+        )
 
-    return np.mean(MSE_PATH), MSE_PATH
+    return np.mean(MSE_PATH), MSE_PATH, metrics_list
 
 def plot_all_trajectories(actions, testing_actions, save_dir="trajectory_plots"):
     """Plot all trajectories comparison between predicted and actual trajectories."""
