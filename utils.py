@@ -118,31 +118,58 @@ def calculate_metrics(predicted, actual, states=None):
     # Calculate safety metrics if states are provided
     safety_metrics = {}
     if states is not None:
-        # Extract relevant state information
+        # Extract relevant state information from observe() method:
         # states[:, 0] = E position - B position (longitudinal)
-        # states[:, 3] = E speed (longitudinal) - This is ego vehicle speed
-        # states[:, 6] = B acc
-        # states[:, 8] = B speed - This is back vehicle speed
+        # states[:, 1] = A position - B position (longitudinal)
+        # states[:, 2] = F position - B position (longitudinal)
+        # states[:, 3] = E speed (longitudinal)
+        # states[:, 4] = A speed (longitudinal)
+        # states[:, 5] = F speed (longitudinal)
+        # states[:, 8] = B speed (longitudinal)
+        # states[:, 10] = B lateral position - target_lane
         
-        # Calculate time-to-collision (TTC) for front vehicle
-        front_distance = states[:, 0].cpu().numpy()  # Distance to front vehicle
-        ego_speed = states[:, 3].cpu().numpy()  # Ego vehicle speed (E speed)
-        back_speed = states[:, 8].cpu().numpy()  # Back vehicle speed (B speed)
+        # Get states as numpy arrays
+        e_distance = states[:, 0].cpu().numpy()  # E position - B position
+        f_distance = states[:, 2].cpu().numpy()  # F position - B position
+        e_speed = states[:, 3].cpu().numpy()  # E speed
+        f_speed = states[:, 5].cpu().numpy()  # F speed
+        ego_speed = states[:, 8].cpu().numpy()  # B speed
+        lateral_offset = states[:, 10].cpu().numpy()  # B lateral position relative to target lane
         
-        # Calculate relative speed (ego speed relative to front vehicle)
-        relative_speed = ego_speed  # Since front_distance is E position - B position, we only need ego speed
+        # Initialize arrays for TTC calculation
+        ttc = np.full_like(ego_speed, np.inf)
         
-        # Calculate TTC (avoid division by zero)
-        ttc = np.where(relative_speed > 0, front_distance / relative_speed, float('inf'))
+        # For each timestep, choose the appropriate front vehicle based on lateral position
+        for t in range(len(lateral_offset)):
+            # If lateral_offset is negative, we're closer to original lane (use F)
+            # If lateral_offset is positive, we're closer to target lane (use E)
+            if lateral_offset[t] < 0:
+                front_distance = f_distance[t]
+                front_speed = f_speed[t]
+            else:
+                front_distance = e_distance[t]
+                front_speed = e_speed[t]
+            
+            # Calculate relative speed (positive when approaching)
+            relative_speed = ego_speed[t] - front_speed
+            
+            # Calculate TTC only if we're approaching and have positive distance
+            if relative_speed > 0 and front_distance > 0:
+                ttc[t] = front_distance / relative_speed
         
         # Calculate safety metrics
-        safety_metrics['min_ttc'] = np.min(ttc[ttc != float('inf')])  # Minimum TTC
-        safety_metrics['mean_ttc'] = np.mean(ttc[ttc != float('inf')])  # Mean TTC
-        safety_metrics['min_distance'] = np.min(front_distance)  # Minimum distance to front vehicle
-        safety_metrics['mean_distance'] = np.mean(front_distance)  # Mean distance to front vehicle
-        safety_metrics['std_ego_speed'] = np.std(ego_speed)  # Standard deviation of ego vehicle speed
-        safety_metrics['std_back_speed'] = np.std(back_speed)  # Standard deviation of back vehicle speed
-        safety_metrics['std_relative_speed'] = np.std(relative_speed)  # Standard deviation of relative speed
+        valid_ttc = ttc[ttc != np.inf]
+        if len(valid_ttc) > 0:
+            safety_metrics['min_ttc'] = np.min(valid_ttc)
+            safety_metrics['mean_ttc'] = np.mean(valid_ttc)
+        else:
+            safety_metrics['min_ttc'] = float('inf')
+            safety_metrics['mean_ttc'] = float('inf')
+        
+        # Calculate minimum distance considering both front vehicles
+        safety_metrics['min_distance'] = min(np.min(e_distance), np.min(f_distance))
+        safety_metrics['mean_distance'] = np.mean(np.minimum(e_distance, f_distance))
+        safety_metrics['std_ego_speed'] = np.std(ego_speed)  # Standard deviation of ego vehicle speed for entire trajectory
 
     metrics = {
         'mse': mse,
@@ -194,15 +221,37 @@ def plot_safety_metrics(states, title="Safety Metrics", save_dir="trajectory_plo
     os.makedirs(traj_dir, exist_ok=True)
     
     # Extract relevant state information
-    front_distance = states[:, 0].cpu().numpy()  # Distance to front vehicle
-    ego_speed = states[:, 3].cpu().numpy()  # Ego vehicle speed (E speed)
-    back_speed = states[:, 8].cpu().numpy()  # Back vehicle speed (B speed)
+    e_distance = states[:, 0].cpu().numpy()  # E position - B position
+    f_distance = states[:, 2].cpu().numpy()  # F position - B position
+    e_speed = states[:, 3].cpu().numpy()  # E speed
+    f_speed = states[:, 5].cpu().numpy()  # F speed
+    ego_speed = states[:, 8].cpu().numpy()  # B speed
+    lateral_offset = states[:, 10].cpu().numpy()  # B lateral position relative to target lane
     
-    # Calculate relative speed and TTC
-    relative_speed = ego_speed  # Since front_distance is E position - B position
-    ttc = np.where(relative_speed > 0, front_distance / relative_speed, float('inf'))
+    # Initialize arrays
+    ttc = np.full_like(ego_speed, np.inf)
+    front_distances = np.zeros_like(ego_speed)
     
-    # Calculate rolling window statistics
+    # For each timestep, choose the appropriate front vehicle based on lateral position
+    for t in range(len(lateral_offset)):
+        # Choose front vehicle based on lateral position
+        if lateral_offset[t] < 0:
+            front_distance = f_distance[t]
+            front_speed = f_speed[t]
+        else:
+            front_distance = e_distance[t]
+            front_speed = e_speed[t]
+        
+        front_distances[t] = front_distance
+        
+        # Calculate relative speed (positive when approaching)
+        relative_speed = ego_speed[t] - front_speed
+        
+        # Calculate TTC only if we're approaching and have positive distance
+        if relative_speed > 0 and front_distance > 0:
+            ttc[t] = front_distance / relative_speed
+    
+    # Calculate rolling window statistics for visualization
     window_size = 50  # 5 seconds with 0.1s timestep
     ego_speed_std = np.array([np.std(ego_speed[max(0, i-window_size):i+1]) for i in range(len(ego_speed))])
     
