@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 from torch.distributions import MultivariateNormal
 from torch.distributions import Categorical
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+device = torch.device("mps" if torch.backends.mps.is_available() else "cuda:0" if torch.cuda.is_available() else "cpu")
 
 
 class ActorCritic(nn.Module):
@@ -69,7 +69,13 @@ class ActorCritic(nn.Module):
             action_yaw = self.actor_yaw(state)
             action_mean = torch.cat((action_acc, action_yaw), 1)
             cov_mat = torch.diag(self.action_var).unsqueeze(dim=0)
-            dist = MultivariateNormal(action_mean, cov_mat)
+            # Handle MPS device compatibility for MultivariateNormal
+            if device.type == 'mps':
+                action_mean_cpu = action_mean.cpu()
+                cov_mat_cpu = cov_mat.cpu()
+                dist = MultivariateNormal(action_mean_cpu, cov_mat_cpu)
+            else:
+                dist = MultivariateNormal(action_mean, cov_mat)
         else:
             action_probs = self.actor(state)
             dist = Categorical(action_probs)
@@ -77,6 +83,11 @@ class ActorCritic(nn.Module):
         action = dist.sample()
         action_logprob = dist.log_prob(action)
         state_val = self.critic(state)
+        
+        # Move back to original device if needed
+        if device.type == 'mps':
+            action = action.to(device)
+            action_logprob = action_logprob.to(device)
 
         return action.detach(), action_logprob.detach(), state_val.detach()
     
@@ -90,7 +101,15 @@ class ActorCritic(nn.Module):
             
             action_var = self.action_var.expand_as(action_mean)
             cov_mat = torch.diag_embed(action_var).to(device)
-            dist = MultivariateNormal(action_mean, cov_mat)
+            
+            # Handle MPS device compatibility for MultivariateNormal
+            if device.type == 'mps':
+                action_mean_cpu = action_mean.cpu()
+                cov_mat_cpu = cov_mat.cpu()
+                action_cpu = action.cpu()
+                dist = MultivariateNormal(action_mean_cpu, cov_mat_cpu)
+            else:
+                dist = MultivariateNormal(action_mean, cov_mat)
             
             # For Single Action Environments.
             if self.action_dim == 1:
@@ -98,8 +117,12 @@ class ActorCritic(nn.Module):
         else:
             action_probs = self.actor(state)
             dist = Categorical(action_probs)
-        action_logprobs = dist.log_prob(action)
-        dist_entropy = dist.entropy()
+        if device.type == 'mps':
+            action_logprobs = dist.log_prob(action_cpu).to(device)
+            dist_entropy = dist.entropy().to(device)
+        else:
+            action_logprobs = dist.log_prob(action)
+            dist_entropy = dist.entropy()
         state_values = self.critic(state)
         
         return action_logprobs, state_values, dist_entropy

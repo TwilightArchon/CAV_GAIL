@@ -22,7 +22,7 @@ def main():
     action_std_init = 0.6
     
     # Setup device
-    device = torch.device('cuda:0' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu')
+    device = torch.device('mps' if torch.backends.mps.is_available() else 'cuda:0' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
 
     # Initialize PPO agent

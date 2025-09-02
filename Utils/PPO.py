@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 from Utils.NeuralNetwork import ActorCritic
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+device = torch.device("mps" if torch.backends.mps.is_available() else "cuda:0" if torch.cuda.is_available() else "cpu")
 
 ################################## PPO Policy ##################################
 class RolloutBuffer:

@@ -5,7 +5,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from Utils.NeuralNetwork import Discriminator
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+device = torch.device("mps" if torch.backends.mps.is_available() else "cuda:0" if torch.cuda.is_available() else "cpu")
 
 ################################## Discriminator ##################################
 
