@@ -6,7 +6,7 @@ from Utils.NeuralNetwork import ActorCritic
 from Utils.Environment_LC import ENVIRONMENT
 from utils import *
 import matplotlib.pyplot as plt
-import matplotlib.animation as animation
+from generate_animation import create_animation
 
 def main():
     # Initialize parameters
@@ -289,59 +289,6 @@ def main():
         save_dir=plots_dir
     )
 
-def create_animation(Dat, Time_len, lane_wid, save_path):
-    """Create an animation of the lane change simulation using the provided code"""
-    lane1 = np.full(Time_len, lane_wid*0.5)
-    lane2 = np.full(Time_len, lane_wid*1.5)
-
-    def init():
-        ax.set_xlim(-lane_wid, lane_wid*3.5)
-        ax.set_ylim(25, 550)
-        ax.axvline(x=0, c='black', linestyle='--', linewidth=2)
-        ax.axvline(x=lane_wid, c='black', linestyle='--', linewidth=2)
-        ax.axvline(x=lane_wid + lane_wid, c='black', linestyle='--', linewidth=2)
-        ax.axvline(x=lane_wid + lane_wid + lane_wid, c='black', linestyle='--', linewidth=2)
-        ax.set_xlabel('Lateral Position (m)')
-        ax.set_ylabel('Longitudinal Position (m)')
-        return B_line, A_line, E_line, F_line, C_line, D_line, G_line, H_line
-
-    def animate(num):
-        B_line.set_data(Dat[:num, 25], Dat[:num, 12])
-        A_line.set_data(lane1[:num], Dat[:num, 3])
-        E_line.set_data(lane1[:num], Dat[:num, 0])
-        F_line.set_data(lane2[:num], Dat[:num, 9])
-        C_line.set_data(lane1[:num], Dat[:num, 6])
-        D_line.set_data(lane2[:num], Dat[:num, 15])
-        G_line.set_data(lane1[:num], Dat[:num, 18])
-        H_line.set_data(lane1[:num], Dat[:num, 21])
-        return B_line, A_line, E_line, F_line, C_line, D_line, G_line, H_line
-
-    fig, ax = plt.subplots()
-    B_line, = ax.plot([], [], linewidth=2, label='B (ego)', marker='s', markevery=[-1], linestyle='None')
-    A_line, = ax.plot([], [], linewidth=2, label='A', marker='s', markevery=[-1], linestyle='None')
-    E_line, = ax.plot([], [], linewidth=2, label='E', marker='s', markevery=[-1], linestyle='None')
-    F_line, = ax.plot([], [], linewidth=2, label='F', marker='s', markevery=[-1], linestyle='None')
-    C_line, = ax.plot([], [], linewidth=2, label='C', marker='s', markevery=[-1], linestyle='None')
-    D_line, = ax.plot([], [], linewidth=2, label='D', marker='s', markevery=[-1], linestyle='None')
-    G_line, = ax.plot([], [], linewidth=2, label='G', marker='s', markevery=[-1], linestyle='None')
-    H_line, = ax.plot([], [], linewidth=2, label='H', marker='s', markevery=[-1], linestyle='None')
-
-    ani = animation.FuncAnimation(
-        fig,    
-        animate, 
-        frames=Time_len, 
-        blit=True, 
-        interval=20, 
-        repeat=False, 
-        init_func=init
-    )
-
-    plt.gca().set_title('Lane Change Animation')
-    plt.legend(loc='upper right')
-
-    ani.save(save_path)
-    plt.close()
-    print(f"Animation saved to {save_path}")
 
 if __name__ == "__main__":
     main() 
