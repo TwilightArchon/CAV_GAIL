@@ -22,7 +22,7 @@ class RolloutBuffer:
         del self.is_terminals[:]
 
 class PPO:
-    def __init__(self, state_dim, action_dim, sequence_size, lr_actor, lr_critic, gamma, K_epochs, eps_clip, has_continuous_action_space, action_std_init = 0.6):
+    def __init__(self, state_dim, action_dim, action_bound, lr_actor, lr_critic, gamma, K_epochs, eps_clip, has_continuous_action_space, action_std_init = 0.4):
 
         self.has_continuous_action_space = has_continuous_action_space
 
@@ -35,19 +35,19 @@ class PPO:
         
         self.buffer = RolloutBuffer()
 
-        self.policy = ActorCritic(state_dim, action_dim, sequence_size, has_continuous_action_space, action_std_init).to(device)
+        self.policy = ActorCritic(state_dim, action_dim, action_bound, has_continuous_action_space, action_std_init).to(device)
         self.optimizer = torch.optim.Adam([
                         {'params': self.policy.actor_acc.parameters(), 'lr': lr_actor},
                         {'params': self.policy.actor_yaw.parameters(), 'lr': lr_actor},
                         {'params': self.policy.critic.parameters(), 'lr': lr_critic}
                     ])
 
-        self.policy_old = ActorCritic(state_dim, action_dim, sequence_size, has_continuous_action_space, action_std_init).to(device)
-        self.policy_old.load_state_dict(self.policy.state_dict())
+        self.policy_old = ActorCritic(state_dim, action_dim, action_bound, has_continuous_action_space, action_std_init).to(device)
+        self.policy_old.load_state_dict(self.policy.state_dict()) # copy parameters from policy to policy_old
         
         self.MseLoss = nn.MSELoss()
 
-    def set_action_std(self, new_action_std):
+    def set_action_std(self, new_action_std): # control the randomness in action generation from the action distribution
         if self.has_continuous_action_space:
             self.action_std = new_action_std
             self.policy.set_action_std(new_action_std)
@@ -64,7 +64,7 @@ class PPO:
                         {'params': self.policy.critic.parameters(), 'lr': lr_critic}
                     ])
         
-    def decay_action_std(self, action_std_decay_rate, min_action_std):
+    def decay_action_std(self, action_std_decay_rate, min_action_std):  # randomness decay
         print("--------------------------------------------------------------------------------------------")
         if self.has_continuous_action_space:
             self.action_std = self.action_std - action_std_decay_rate
@@ -80,8 +80,8 @@ class PPO:
             print("WARNING : Calling PPO::decay_action_std() on discrete action space policy")
         print("--------------------------------------------------------------------------------------------")
 
-    def select_action(self, state):
-
+    def select_action(self, state):   # geneart actions. for interaction with Env
+        # read state from the env and generate actions to the env
         if self.has_continuous_action_space:
             with torch.no_grad():
                 state = torch.FloatTensor(state).to(device)
@@ -92,7 +92,7 @@ class PPO:
             self.buffer.logprobs.append(action_logprob)
             self.buffer.state_values.append(state_val)
 
-            return action.detach().cpu().numpy().flatten()
+            return action.detach().cpu().numpy().flatten() 
         else:
             with torch.no_grad():
                 state = torch.FloatTensor(state).to(device)

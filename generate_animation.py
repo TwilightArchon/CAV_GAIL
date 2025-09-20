@@ -5,7 +5,6 @@ import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 from Utils.Environment_LC import ENVIRONMENT
 from Utils.PPO import PPO
-from utils import find_best_model, load_trajectories
 
 def create_animation(Dat, Time_len, lane_wid, save_path):
     """Create an animation of the lane change simulation"""
@@ -61,92 +60,96 @@ def create_animation(Dat, Time_len, lane_wid, save_path):
     plt.close()
     print(f"Animation saved to {save_path}")
 
-def run_simulation_with_model(ppo_agent, Env, Time_len=500):
-    """Run simulation using trained PPO model for lane changes"""
+def run_simulation_with_model(ppo_agent, Env, Model_B, Time_len=500, device='cpu'):
+    """Run simulation using trained PPO model - adapted from GAIL_CAV_Revised notebook"""
     
+    # Parameters from Simulation.ipynb
     lane_wid = 3.75
     veh_len = 5.0
     
-    # Parameters for lane changing
-    LC_end_pos = 0.5      # lateral position deviation
-    LC_end_yaw = 0.005    # yaw angle deviation 
+    # lane-change termination conditions (from Simulation.ipynb)
+    LC_end_pos = 0.5    # m   offset to the middle of the target lane
+    LC_end_spd = 0.1    # m/s lateral speed threshold
     
-    # Initialize tracking variables
-    LC_start = False
-    LC_starttime = 0
-    LC_endtime = 0
-    LC_mid = 0
-    
-    # Reset environment
+    # Simulation - adapted from GAIL_CAV_Revised notebook
     Env.reset()
+    LC_start = False    # indication lane change
+    LC_starttime = 0    # time of lane change start
+    LC_endtime = 0      # time of lane change end
+    LC_mid = 0          # time crossing lane marking
+    ACT = []
+    ACT.append([0,0])
     
-    # Run simulation
-    for t in range(1, Time_len):
-        s_t, env_t = Env.observe()
+    for t in range(1, Time_len):  
+        s_t, env_t = Env.observe()       # Observation, environment time step     
         if t != env_t + 1:
             print('warning: time inconsistency!')
-            
-        Dat = Env.read()
+                        
+        Dat = Env.read()                 # ground-truth information
         
-        # Handle lane change logic
-        if Dat[t-1, 24] != 0 and LC_start == False and LC_starttime == 0:
-            LC_start = True
+        # Lane change indication - adapted from GAIL_CAV_Revised notebook
+        if Dat[t-1,24]!=0 and LC_start == False and LC_starttime == 0:                 # if LC is true at the end of last time step
+            LC_start = True  
             LC_starttime = t
-        elif abs(Dat[t-1, 25] - 0.5 * lane_wid) <= LC_end_pos and abs(Dat[t-1, 26]) <= LC_end_yaw and LC_start == True and LC_endtime == 0:
+        # finish lane change - stop in the center of the target lane
+        elif abs(Dat[t-1,25] - 0.5*lane_wid) <= LC_end_pos and abs(Dat[t-1,26]) <= 0.005 and LC_start == True and LC_endtime == 0:       
             LC_start = False
-            LC_endtime = t
-        elif (Dat[t-1, 25] <= -lane_wid or Dat[t-1, 25] > 2.0 * lane_wid) and LC_start == True and LC_endtime == 0:
+            LC_endtime   = t
+        # out of boundary
+        elif (Dat[t-1,25] <= -lane_wid or Dat[t-1,25] > 2.0 * lane_wid) and LC_start == True and LC_endtime == 0:       
             LC_start = False
-            LC_endtime = t
-            
-        # B cross the line
-        if Dat[t-1, 25] <= lane_wid and LC_mid == 0:
-            LC_mid = t
-            
-        # Determine action based on lane change status
+            LC_endtime   = t
+        
+        # B cross the line    
+        if Dat[t-1,25]<=lane_wid and LC_mid==0:
+            LC_mid = t         # record the time cross lane-marking
+
+        # Low-level task: action - adapted from GAIL_CAV_Revised notebook             
         if LC_start == False:
-            # Use IDM model based on lane position
-            if Dat[t-1, 25] > lane_wid:  # B in lane 2, B follows F
-                act_0 = Env.IDM_B(Dat[t-1, 13], Dat[t-1, 13] - Dat[t-1, 10], Dat[t-1, 9] - Dat[t-1, 12] - veh_len)
-            else:  # B cross the line, B follow E
-                act_0 = Env.IDM_B(Dat[t-1, 13], Dat[t-1, 13] - Dat[t-1, 1], Dat[t-1, 0] - Dat[t-1, 12] - veh_len)
-                
-            act_1 = 0  # no yaw rate
-            action = [act_0, act_1]
-        else:
-            # Use learned policy during lane change
-            state, _ = Env.observe()
-            action = ppo_agent.select_action(state)
-            print(f"Lane change at t={t}, action: {action}")
+            # longitudinal
+            if Dat[t-1,25] > lane_wid:    # B in lane 2, B follow F
+                act_0 = Model_B(Dat[t-1,13], Dat[t-1,13] - Dat[t-1,10], Dat[t-1,9] - Dat[t-1,12] - veh_len) #IDM
+            elif Dat[t-1,25] <= lane_wid:   # B cross the line, B follow E
+                act_0 = Model_B(Dat[t-1,13], Dat[t-1,13] - Dat[t-1,1], Dat[t-1,0] - Dat[t-1,12] - veh_len) #IDM
             
-        Env.run(action)
-    
+            # lateral
+            act_1 = 0                   # yaw rate
+            
+            act = [act_0, act_1]
+        else:   
+            # Use PPO agent during lane change - matching GAIL_CAV_Revised notebook
+            state, _ = Env.observe()
+            act = ppo_agent.select_action(state)
+            
+        # Run environment
+        reward, done = Env.run(act)
+        ACT.append(act)
+
     return Env.read()
 
 def main():
-    """Load trained model and generate animation"""
+    """Load trained model and generate animation - adapted from GAIL_CAV_Revised notebook"""
     
-    # Initialize parameters (same as in test.py)
-    state_dim = 11
-    action_dim = 2
-    sequence_size = 5
-    lr_actor = 0.0003
-    lr_critic = 0.001
-    gamma = 0.99
-    K_epochs = 80
-    eps_clip = 0.2
-    has_continuous_action_space = True
-    action_std_init = 0.6
-    
-    # Setup device
-    device = torch.device('mps' if torch.backends.mps.is_available() else 'cuda:0' if torch.cuda.is_available() else 'cpu')
+    # Setup device - matching GAIL_CAV_Revised notebook
+    device = torch.device("mps" if torch.backends.mps.is_available() else "cuda:0" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     
-    # Initialize PPO agent
+    # Initialize PPO agent - matching GAIL_CAV_Revised notebook parameters
+    state_dim = 11
+    action_dim = 2
+    action_bound = 2
+    lr_actor = 0.001
+    lr_critic = 0.001
+    gamma = 0.95
+    K_epochs = 16
+    eps_clip = 0.15
+    has_continuous_action_space = True
+    action_std_init = 0.4
+    
     ppo_agent = PPO(
         state_dim=state_dim,
         action_dim=action_dim,
-        sequence_size=sequence_size,
+        action_bound=action_bound,  # Match test.py and notebook approach
         lr_actor=lr_actor,
         lr_critic=lr_critic,
         gamma=gamma,
@@ -156,40 +159,22 @@ def main():
         action_std_init=action_std_init
     )
     
-    # Option 1: Load a specific model
-    model_path = "Trained_model/GAIL_1144.pth"  # You can change this path
-    
-    # Option 2: Find and load the best model (uncomment if you want to use this)
-    # print("Loading trajectories to find best model...")
-    # trajectories = load_trajectories(
-    #     expert_path="Expert_trajectory/expert_traj.npy",
-    #     testing_path="Expert_trajectory/testing_traj.npy",
-    #     state_dim=state_dim,
-    #     action_dim=action_dim,
-    #     device=device
-    # )
-    # model_path, best_mse = find_best_model(
-    #     ppo_agent=ppo_agent,
-    #     model_dir="Trained_model",
-    #     testing_states=trajectories['testing'][0],
-    #     testing_actions=trajectories['testing'][1],
-    #     start_idx=0,
-    #     end_idx=1200
-    # )
-    # print(f"Best model found at: {model_path} with MSE: {best_mse}")
-    
-    # Load the model
+    # Load model - use best trained model
+    model_path = "Trained_model/GAIL_1144.pth"
     print(f"Loading model from: {model_path}")
+    
     ppo_agent.load(model_path)
-    ppo_agent.set_action_std(0.00000000001)  # Set very small std for deterministic behavior
+    ppo_agent.set_action_std(0.00000000001)  # Very small std for deterministic behavior
     ppo_agent.policy_old.eval()
     
     # Initialize environment
     Env = ENVIRONMENT(para_B="normal", para_A="normal", noise=False)
     
+    Model_B = Env.IDM_B  # Use IDM_B for longitudinal control
+    
     # Run simulation with trained model
     print("Running simulation with trained model...")
-    Dat = run_simulation_with_model(ppo_agent, Env, Time_len=500)
+    Dat = run_simulation_with_model(ppo_agent, Env, Model_B, Time_len=500, device=device)
     
     # Create output directory if it doesn't exist
     output_dir = "animations"

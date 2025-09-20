@@ -12,7 +12,7 @@ def main():
     # Initialize parameters
     state_dim = 11
     action_dim = 2
-    sequence_size = 5  # From Environment_LC.py
+    action_bound = 2  # Action bounds for ActorCritic network
     lr_actor = 0.0003
     lr_critic = 0.001
     gamma = 0.99
@@ -29,7 +29,7 @@ def main():
     ppo_agent = PPO(
         state_dim=state_dim,
         action_dim=action_dim,
-        sequence_size=sequence_size,
+        action_bound=action_bound,
         lr_actor=lr_actor,
         lr_critic=lr_critic,
         gamma=gamma,
