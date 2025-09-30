@@ -60,71 +60,83 @@ def create_animation(Dat, Time_len, lane_wid, save_path):
     plt.close()
     print(f"Animation saved to {save_path}")
 
-def run_simulation_with_model(ppo_agent, Env, Model_B, Time_len=500, device='cpu'):
-    """Run simulation using trained PPO model - adapted from GAIL_CAV_Revised notebook"""
+def run_simulation_with_model(ppo_agent, Env, Time_len=500, device='cpu'):
+    """Run simulation using trained PPO model - exactly matching GAIL_CAV_Revised notebook"""
     
-    # Parameters from Simulation.ipynb
-    lane_wid = 3.75
-    veh_len = 5.0
+    # Parameters from training notebook
+    LC_end_pos = 0.5      # lateral position deviation (within 0.5m of lane center)
+    LC_end_yaw = 0.005    # yaw angle deviation (within 0.005 radians ≈ 0.3 degrees) 
     
-    # lane-change termination conditions (from Simulation.ipynb)
-    LC_end_pos = 0.5    # m   offset to the middle of the target lane
-    LC_end_spd = 0.1    # m/s lateral speed threshold
+    lane_wid = 3.75               
+    veh_len  = 5.0
+    v_0      = 30   
     
-    # Simulation - adapted from GAIL_CAV_Revised notebook
-    Env.reset()
-    LC_start = False    # indication lane change
-    LC_starttime = 0    # time of lane change start
-    LC_endtime = 0      # time of lane change end
-    LC_mid = 0          # time crossing lane marking
-    ACT = []
-    ACT.append([0,0])
+    # Single iteration with normal driver behavior
+    A_para = 'normal'
     
+    # Environment    
+    Env.reset()   
+    LC_start = False   
+    LC_starttime = 0
+    LC_endtime   = 0
+    LC_mid       = 0
+
     for t in range(1, Time_len):  
-        s_t, env_t = Env.observe()       # Observation, environment time step     
-        if t != env_t + 1:
+        s_t, env_t = Env.observe()       #Observation        
+        if t != env_t + 1:               # check time consistency between Env and simulation code
             print('warning: time inconsistency!')
-                        
-        Dat = Env.read()                 # ground-truth information
-        
-        # Lane change indication - adapted from GAIL_CAV_Revised notebook
+
+        Dat = Env.read()                 # Read ground-truth information
+
+        #Lane change indication
         if Dat[t-1,24]!=0 and LC_start == False and LC_starttime == 0:                 # if LC is true at the end of last time step
             LC_start = True  
             LC_starttime = t
+            print(f"Lane change started at t={t}")
         # finish lane change - stop in the center of the target lane
-        elif abs(Dat[t-1,25] - 0.5*lane_wid) <= LC_end_pos and abs(Dat[t-1,26]) <= 0.005 and LC_start == True and LC_endtime == 0:       
+        elif abs(Dat[t-1,25] - 0.5*lane_wid) <= LC_end_pos and abs(Dat[t-1,26]) <= LC_end_yaw and LC_start == True and LC_endtime == 0:       
             LC_start = False
             LC_endtime   = t
+            print(f"Lane change ended at t={t}, lateral pos={Dat[t-1,25]:.3f}, yaw angle={Dat[t-1,26]:.5f}")
         # out of boundary
-        elif (Dat[t-1,25] <= -lane_wid or Dat[t-1,25] > 2.0 * lane_wid) and LC_start == True and LC_endtime == 0:       
+        elif (Dat[t-1,25] <= - lane_wid or Dat[t-1,25] > 2.0 * lane_wid) and LC_start == True and LC_endtime == 0:       
             LC_start = False
             LC_endtime   = t
+            print(f"Lane change ended (out of boundary) at t={t}, lateral pos={Dat[t-1,25]:.3f}")
         
         # B cross the line    
         if Dat[t-1,25]<=lane_wid and LC_mid==0:
             LC_mid = t         # record the time cross lane-marking
+            print(f"Crossed lane marking at t={t}")
 
-        # Low-level task: action - adapted from GAIL_CAV_Revised notebook             
+        # Low-level task: action              
         if LC_start == False:
             # longitudinal
             if Dat[t-1,25] > lane_wid:    # B in lane 2, B follow F
-                act_0 = Model_B(Dat[t-1,13], Dat[t-1,13] - Dat[t-1,10], Dat[t-1,9] - Dat[t-1,12] - veh_len) #IDM
+                act_0 = Env.IDM_B(Dat[t-1,13], Dat[t-1,13] - Dat[t-1,10], Dat[t-1,9] - Dat[t-1,12] - veh_len) #IDM
             elif Dat[t-1,25] <= lane_wid:   # B cross the line, B follow E
-                act_0 = Model_B(Dat[t-1,13], Dat[t-1,13] - Dat[t-1,1], Dat[t-1,0] - Dat[t-1,12] - veh_len) #IDM
+                act_0 = Env.IDM_B(Dat[t-1,13], Dat[t-1,13] - Dat[t-1,1], Dat[t-1,0] - Dat[t-1,12] - veh_len) #IDM
             
             # lateral
             act_1 = 0                   # yaw rate
             
-            act = [act_0, act_1]
-        else:   
-            # Use PPO agent during lane change - matching GAIL_CAV_Revised notebook
+            action = [act_0, act_1]
+            Env.run(action)
+        
+        else:
             state, _ = Env.observe()
-            act = ppo_agent.select_action(state)
-            
-        # Run environment
-        reward, done = Env.run(act)
-        ACT.append(act)
 
+            action = ppo_agent.select_action(state)
+            
+            # Debug: print key events during lane change (optional, comment out for clean output)
+            # if t == LC_starttime or t == LC_starttime + 1 or t == LC_starttime + 2 or (t - LC_starttime) % 10 == 0:
+            #     target_lat_pos = 0.5 * lane_wid  # 1.875m
+            #     dist_to_target = abs(Dat[t-1,25] - target_lat_pos)
+            #     print(f"t={t}, lat_pos={Dat[t-1,25]:.3f} (target={target_lat_pos:.3f}, dist={dist_to_target:.3f}), yaw_ang={Dat[t-1,26]:.5f}, action=[{action[0]:.3f}, {action[1]:.3f}], state[10]={state[0,10]:.3f}")
+            
+            Env.run(action) # run human behavior
+    
+    print(f"Simulation completed. LC_starttime={LC_starttime}, LC_endtime={LC_endtime}, LC_mid={LC_mid}")
     return Env.read()
 
 def main():
@@ -159,7 +171,7 @@ def main():
         action_std_init=action_std_init
     )
     
-    # Load model - use best trained model
+    # Load model - use GAIL_1144 (mentor's working model)
     model_path = "Trained_model/GAIL_1144.pth"
     print(f"Loading model from: {model_path}")
     
@@ -167,14 +179,18 @@ def main():
     ppo_agent.set_action_std(0.00000000001)  # Very small std for deterministic behavior
     ppo_agent.policy_old.eval()
     
-    # Initialize environment
-    Env = ENVIRONMENT(para_B="normal", para_A="normal", noise=False)
+    # Initialize environment - MATCH TRAINING PARAMETERS
+    # Training uses: para_B='2000', para_A='normal', noise=True (training), noise=False (testing for deterministic results)
+    # Note: noise=True randomizes IDM parameters each initialization, causing inconsistent results
+    # Use noise=False for deterministic, reproducible testing
+    Env = ENVIRONMENT(para_B='2000', para_A='normal', noise=False)
     
     Model_B = Env.IDM_B  # Use IDM_B for longitudinal control
     
     # Run simulation with trained model
     print("Running simulation with trained model...")
-    Dat = run_simulation_with_model(ppo_agent, Env, Model_B, Time_len=500, device=device)
+    # Note: Model may oscillate around target, out of bounds is expected for undertrained model
+    Dat = run_simulation_with_model(ppo_agent, Env, Time_len=500, device=device)
     
     # Create output directory if it doesn't exist
     output_dir = "animations"
