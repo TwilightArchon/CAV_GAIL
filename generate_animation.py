@@ -20,7 +20,8 @@ def create_animation(Dat, Time_len, lane_wid, save_path):
         ax.axvline(x=lane_wid + lane_wid + lane_wid, c='black', linestyle='--', linewidth=2)
         ax.set_xlabel('Lateral Position (m)')
         ax.set_ylabel('Longitudinal Position (m)')
-        return B_line, A_line, E_line, F_line, C_line, D_line, G_line, H_line
+        time_text.set_text('')
+        return B_line, A_line, E_line, F_line, C_line, D_line, G_line, H_line, time_text
 
     def animate(num):
         B_line.set_data(Dat[:num, 25], Dat[:num, 12])
@@ -31,7 +32,12 @@ def create_animation(Dat, Time_len, lane_wid, save_path):
         D_line.set_data(lane2[:num], Dat[:num, 15])
         G_line.set_data(lane1[:num], Dat[:num, 18])
         H_line.set_data(lane1[:num], Dat[:num, 21])
-        return B_line, A_line, E_line, F_line, C_line, D_line, G_line, H_line
+        
+        # Update time display
+        time_sec = num * 0.1  # Each timestep is 0.1 seconds
+        time_text.set_text(f'Time: t={num} ({time_sec:.1f}s)\nLat Pos: {Dat[num-1, 25]:.2f}m')
+        
+        return B_line, A_line, E_line, F_line, C_line, D_line, G_line, H_line, time_text
 
     fig, ax = plt.subplots()
     B_line, = ax.plot([], [], linewidth=2, label='B (ego)', marker='s', markevery=[-1], linestyle='None')
@@ -42,6 +48,10 @@ def create_animation(Dat, Time_len, lane_wid, save_path):
     D_line, = ax.plot([], [], linewidth=2, label='D', marker='s', markevery=[-1], linestyle='None')
     G_line, = ax.plot([], [], linewidth=2, label='G', marker='s', markevery=[-1], linestyle='None')
     H_line, = ax.plot([], [], linewidth=2, label='H', marker='s', markevery=[-1], linestyle='None')
+    
+    # Add time text display
+    time_text = ax.text(0.02, 0.95, '', transform=ax.transAxes, fontsize=12,
+                       verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
 
     ani = animation.FuncAnimation(
         fig,    
@@ -65,7 +75,7 @@ def run_simulation_with_model(ppo_agent, Env, Time_len=500, device='cpu'):
     
     # Parameters from training notebook
     LC_end_pos = 0.5      # lateral position deviation (within 0.5m of lane center)
-    LC_end_yaw = 0.005    # yaw angle deviation (within 0.005 radians ≈ 0.3 degrees) 
+    LC_end_yaw = 0.001    # yaw angle deviation (within 0.005 radians ≈ 0.3 degrees) 
     
     lane_wid = 3.75               
     veh_len  = 5.0
@@ -87,11 +97,14 @@ def run_simulation_with_model(ppo_agent, Env, Time_len=500, device='cpu'):
             print('warning: time inconsistency!')
 
         Dat = Env.read()                 # Read ground-truth information
-
+        # print(f"Dat[t-1,24]: {Dat[t-1,24]}")
+        # print(f"LC_endangle: {LC_end_yaw}")
+        # print(f"Current yaw angle: {Dat[t-1,26]}")
         #Lane change indication
         if Dat[t-1,24]!=0 and LC_start == False and LC_starttime == 0:                 # if LC is true at the end of last time step
             LC_start = True  
             LC_starttime = t
+            LC_endtime = 0
             print(f"Lane change started at t={t}")
         # finish lane change - stop in the center of the target lane
         elif abs(Dat[t-1,25] - 0.5*lane_wid) <= LC_end_pos and abs(Dat[t-1,26]) <= LC_end_yaw and LC_start == True and LC_endtime == 0:       
@@ -128,11 +141,26 @@ def run_simulation_with_model(ppo_agent, Env, Time_len=500, device='cpu'):
 
             action = ppo_agent.select_action(state)
             
-            # Debug: print key events during lane change (optional, comment out for clean output)
-            # if t == LC_starttime or t == LC_starttime + 1 or t == LC_starttime + 2 or (t - LC_starttime) % 10 == 0:
-            #     target_lat_pos = 0.5 * lane_wid  # 1.875m
-            #     dist_to_target = abs(Dat[t-1,25] - target_lat_pos)
-            #     print(f"t={t}, lat_pos={Dat[t-1,25]:.3f} (target={target_lat_pos:.3f}, dist={dist_to_target:.3f}), yaw_ang={Dat[t-1,26]:.5f}, action=[{action[0]:.3f}, {action[1]:.3f}], state[10]={state[0,10]:.3f}")
+            # Check termination conditions and print why it doesn't stop
+            target_lat_pos = 0.5 * lane_wid  # 1.875m
+            dist_to_target = abs(Dat[t-1,25] - target_lat_pos)
+            yaw_angle = abs(Dat[t-1,26])
+            
+            dist_ok = dist_to_target <= LC_end_pos
+            yaw_ok = yaw_angle <= LC_end_yaw
+            should_stop = dist_ok and yaw_ok
+            
+            # Print every 5 timesteps or when conditions change
+            if (t - LC_starttime) % 5 == 0 or should_stop:
+                print(f"t={t}: lat_pos={Dat[t-1,25]:.3f}m, dist={dist_to_target:.3f}m, yaw={Dat[t-1,26]:.5f}rad")
+                print(f"       Dist<={LC_end_pos}m? {dist_ok} | Yaw<={LC_end_yaw}rad? {yaw_ok} | Should STOP? {should_stop}")
+                if not should_stop:
+                    if not dist_ok:
+                        print(f"       ❌ NOT stopping: Distance too large ({dist_to_target:.3f}m > {LC_end_pos}m)")
+                    if not yaw_ok:
+                        print(f"       ❌ NOT stopping: Yaw angle too large ({yaw_angle:.5f}rad > {LC_end_yaw}rad)")
+                else:
+                    print(f"       ✅ Both conditions met - will stop at NEXT check!")
             
             Env.run(action) # run human behavior
     
@@ -172,7 +200,10 @@ def main():
     )
     
     # Load model - use GAIL_1144 (mentor's working model)
-    model_path = "Trained_model/GAIL_1144.pth"
+    # model_path = "Trained_model/GAIL_927.pth" pretty good
+    # model_path = "Trained_model/GAIL_1110.pth" very good
+    # model_path = "Trained_model/GAIL_1160.pth" goes too far left and then too far right
+    model_path = "Trained_model/GAIL_113.pth"
     print(f"Loading model from: {model_path}")
     
     ppo_agent.load(model_path)

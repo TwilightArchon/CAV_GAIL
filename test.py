@@ -68,22 +68,26 @@ def main():
 
     # Load the best model for evaluation
     ppo_agent.load(best_model_path)
-    ppo_agent.set_action_std(0.00000000001)
+    ppo_agent.set_action_std(0.00000000001)  # Very small std for deterministic behavior
     ppo_agent.policy_old.eval()
+    
+    import torch.nn as nn
     loss = nn.MSELoss()
 
 
     # Step 2: Run simulation ONCE for safety metrics using the same approach as training
     print("\nRunning simulation to calculate safety metrics...")
     
-    # Initialize environment parameters
-    Env = ENVIRONMENT(para_B="normal", para_A="normal", noise=False)
+    # Initialize environment - MATCH TRAINING PARAMETERS
+    # Training uses: para_B='2000', para_A='normal', noise=True
+    # Use noise=False for deterministic, reproducible testing
+    Env = ENVIRONMENT(para_B='2000', para_A='normal', noise=False)
     veh_len = Env.veh_len
     lane_wid = Env.lane_wid
     
     # Parameters for lane changing
-    LC_end_pos = 0.5      # lateral position deviation
-    LC_end_yaw = 0.005    # yaw angle deviation 
+    LC_end_pos = 0.5      # lateral position deviation (within 0.5m of lane center)
+    LC_end_yaw = 0.001    # yaw angle deviation (within 0.001 radians) 
     
     # Initialize tracking variables
     LC_start = False
@@ -93,19 +97,14 @@ def main():
 
     path_idx    = 0
     Time_len = 500
-    lane_wid = 3.75               
-    veh_len  = 5.0
     
     # Initialize arrays to track metrics
     ttc_values = []
     distances = []
     ego_speeds = []
-
     
     # Run the simulation for the full time loop
-    Time_len = Env.Time_len
-    
-    for t in range(1, 500):
+    for t in range(1, Time_len):
         # Get observation and ground truth data
         s_t, env_t = Env.observe()
         if t != env_t + 1:
@@ -145,16 +144,21 @@ def main():
         if Dat[t-1, 24] != 0 and LC_start == False and LC_starttime == 0:
             LC_start = True
             LC_starttime = t
+            LC_endtime = 0
+            print(f"Lane change started at t={t}")
         elif abs(Dat[t-1, 25] - 0.5 * lane_wid) <= LC_end_pos and abs(Dat[t-1, 26]) <= LC_end_yaw and LC_start == True and LC_endtime == 0:
             LC_start = False
             LC_endtime = t
+            print(f"Lane change ended at t={t}, lateral pos={Dat[t-1,25]:.3f}, yaw angle={Dat[t-1,26]:.5f}")
         elif (Dat[t-1, 25] <= -lane_wid or Dat[t-1, 25] > 2.0 * lane_wid) and LC_start == True and LC_endtime == 0:
             LC_start = False
             LC_endtime = t
+            print(f"Lane change ended (out of boundary) at t={t}, lateral pos={Dat[t-1,25]:.3f}")
             
         # B cross the line
         if Dat[t-1, 25] <= lane_wid and LC_mid == 0:
             LC_mid = t
+            print(f"Crossed lane marking at t={t}")
             
         # Determine action based on lane change status
         if LC_start == False:
@@ -171,17 +175,28 @@ def main():
             # Use learned policy during lane change
             state, _ = Env.observe()
             action = ppo_agent.select_action(state)
-            print(action)
+            # Uncomment below for detailed debugging:
+            # print(f"t={t}: action={action}")
             
         # Run the environment with the action
         Env.run(action)
     
     # Create animation of the simulation
+    print("\nGenerating lane change animation...")
     Dat = Env.read()
-    create_animation(Dat, Time_len, lane_wid, os.path.join(plots_dir, "lanechange.gif"))
+    animation_path = os.path.join(plots_dir, "lanechange.gif")
+    create_animation(Dat, Time_len, lane_wid, animation_path)
+    print(f"Animation saved to: {animation_path}")
+    
+    # Print simulation summary
+    print(f"\nSimulation Summary:")
+    print(f"  Lane change start time: t={LC_starttime}")
+    print(f"  Lane change end time: t={LC_endtime}")
+    print(f"  Lane marking crossed: {'Yes at t='+str(LC_mid) if LC_mid > 0 else 'No'}")
+    print(f"  Duration: {LC_endtime - LC_starttime if LC_endtime > 0 else 'N/A'} timesteps")
     
     # Calculate safety metrics from the results
-    print(f"Total time steps with valid TTC values: {len(ttc_values)}")
+    print(f"\nTotal time steps with valid TTC values: {len(ttc_values)}")
 
     # Step 1: Evaluate MSE for all trajectories
     individual_mses = []
